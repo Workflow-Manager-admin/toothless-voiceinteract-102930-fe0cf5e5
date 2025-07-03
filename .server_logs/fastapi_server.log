@@ -28,3 +28,15 @@ INFO:     100.64.4.167:60370 - "GET /docs HTTP/1.1" 200 OK
 INFO:     100.64.4.167:60376 - "GET /docs HTTP/1.1" 200 OK
 INFO:     100.64.4.167:60382 - "GET /openapi.json HTTP/1.1" 200 OK
 INFO:     100.64.4.167:60398 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     100.64.4.167:52166 - "OPTIONS /gemini HTTP/1.1" 200 OK
+INFO:     100.64.4.167:52174 - "POST /gemini HTTP/1.1" 404 Not Found
+INFO:     100.64.4.167:52182 - "OPTIONS /speak HTTP/1.1" 200 OK
+INFO:     100.64.4.167:52198 - "POST /speak HTTP/1.1" 500 Internal Server Error
+INFO:     100.64.4.167:56338 - "POST /gemini HTTP/1.1" 404 Not Found
+INFO:     100.64.4.167:56340 - "POST /speak HTTP/1.1" 500 Internal Server Error
+INFO:     100.64.4.167:44552 - "HEAD /docs HTTP/1.1" 200 OK
+INFO:     100.64.4.167:44564 - "HEAD /docs HTTP/1.1" 200 OK
+INFO:     100.64.4.167:44572 - "GET /docs HTTP/1.1" 200 OK
+INFO:     100.64.4.167:44580 - "GET /docs HTTP/1.1" 200 OK
+INFO:     100.64.4.167:44584 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     100.64.4.167:44590 - "GET /openapi.json HTTP/1.1" 200 OK
