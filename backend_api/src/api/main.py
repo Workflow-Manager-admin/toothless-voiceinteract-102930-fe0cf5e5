@@ -16,13 +16,17 @@ import httpx
 import os
 from typing import Optional
 
-# ---- Configuration ----
+# ---- Secure Configuration Loader ----
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+def get_env_var_securely(var_name: str, default: Optional[str] = "", required: bool = False):
+    """Fetch env variable or raise HTTP 500 if required and missing."""
+    v = os.environ.get(var_name, default)
+    if required and not v:
+        raise HTTPException(status_code=500, detail=f"{var_name} not configured.")
+    return v
+
+# Provide default endpoints, keys are loaded dynamically in endpoints for max security
 GEMINI_ENDPOINT = os.environ.get("GEMINI_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent")
-
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default: Rachel
 ELEVENLABS_ENDPOINT = os.environ.get("ELEVENLABS_ENDPOINT", "https://api.elevenlabs.io/v1/text-to-speech")
 
 # ---- FastAPI App Initialization ----
@@ -89,29 +93,32 @@ async def chat(request: ChatRequest):
     - Accepts: { "prompt": "your input" }
     - Returns: { "reply": "AI reply" }
     """
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="Gemini API key not configured.")
+    # Securely load Gemini Pro API key each time
+    gemini_api_key = get_env_var_securely("GEMINI_API_KEY", required=True)
 
     payload = {
         "contents": [
             {"parts": [{"text": request.prompt}]}
         ]
     }
+    # The Google Gemini generative language API expects ?key= in query
+    # Do not log the key!
     headers = {
-        "Authorization": f"Bearer {GEMINI_API_KEY}",
+        "Authorization": f"Bearer {gemini_api_key}",
         "Content-Type": "application/json"
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
-                f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
+                f"{GEMINI_ENDPOINT}?key={gemini_api_key}",
                 json=payload,
                 headers=headers,
             )
         if r.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Gemini error: {r.text}")
+            # scrub any key occurrence in response text
+            msg = r.text.replace(gemini_api_key, "[secure]")
+            raise HTTPException(status_code=502, detail=f"Gemini error: {msg}")
         result = r.json()
-        # We're expecting: {'candidates': [{'content': {'parts': [{'text': ...}]}}]}
         reply = (
             result.get("candidates", [{}])[0]
             .get("content", {})
@@ -121,13 +128,14 @@ async def chat(request: ChatRequest):
         if not reply:
             raise HTTPException(status_code=502, detail="No chat response from Gemini Pro.")
         return ChatResponse(reply=reply)
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Error communicating with Gemini Pro: {str(e)}")
+    except httpx.RequestError:
+        # Do not leak secrets
+        raise HTTPException(status_code=502, detail="Error communicating with Gemini Pro.")
 
 # ---- Text-to-Speech (TTS) Endpoint ----
 
 @app.post(
-    "/tts",
+    "/speak",
     tags=["TTS", "Voice"],
     summary="Text-to-speech via ElevenLabs",
     description="Forwards text to ElevenLabs and returns generated speech audio (as streaming audio/mpeg).",
@@ -138,7 +146,7 @@ async def chat(request: ChatRequest):
         }
     }
 )
-async def tts(request: TTSRequest):
+async def speak(request: TTSRequest):
     """
     PUBLIC_INTERFACE
     Receives text and returns ElevenLabs synthesized speech audio.
@@ -146,10 +154,12 @@ async def tts(request: TTSRequest):
     - Accepts: { "text": "Hello world", "voice_id": "optional_id" }
     - Returns: audio/mpeg stream (use as file download or direct audio playback)
     """
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured.")
-    voice_id = request.voice_id or ELEVENLABS_VOICE_ID
-    endpoint = f"{ELEVENLABS_ENDPOINT}/{voice_id}"
+    # Load API key and voice ID at request time for best env hygiene
+    eleven_api_key = get_env_var_securely("ELEVEN_API_KEY", required=True)
+    # Voice ID: allow override, else pick from env
+    eleven_voice_id = request.voice_id or get_env_var_securely("ELEVEN_VOICE_ID", required=True)
+    endpoint = f"{ELEVENLABS_ENDPOINT}/{eleven_voice_id}"
+
     payload = {
         "text": request.text,
         "model_id": "eleven_monolingual_v1",
@@ -159,22 +169,24 @@ async def tts(request: TTSRequest):
         }
     }
     headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
+        "xi-api-key": eleven_api_key,
         "Content-Type": "application/json"
     }
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{endpoint}",
+                endpoint,
                 headers=headers,
                 json=payload
             )
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"ElevenLabs error: {resp.text}")
+            msg = resp.text.replace(eleven_api_key, "[secure]").replace(eleven_voice_id, "[secure]")
+            raise HTTPException(status_code=502, detail=f"ElevenLabs error: {msg}")
         # Stream audio response directly
         return StreamingResponse(resp.aiter_bytes(), media_type="audio/mpeg")
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Error communicating with ElevenLabs: {str(e)}")
+    except httpx.RequestError:
+        # Don't reveal any sensitive error details
+        raise HTTPException(status_code=502, detail="Error communicating with ElevenLabs.")
 
 # ---- API Docs route for WebSocket/Realtime connection help (for extensibility) ----
 
@@ -188,10 +200,17 @@ def websocket_usage():
         "usage": "This API currently supports only REST endpoints. For realtime or websocket-based features (like streaming chat or TTS), use future endpoints at /ws/* with appropriate socket protocols."
     }
 
+# ---- Deprecated /tts route for backward compatibility, wraps /speak ----
+@app.post("/tts", tags=["TTS", "Voice"], include_in_schema=False)
+async def tts_alias(request: TTSRequest):
+    """Deprecated. Forwards request to /speak for legacy clients."""
+    return await speak(request)
+
 # ---- Multipurpose Error Handler ----
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    # Do not leak secrets in uncaught exceptions - just a generic error
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal Server Error", "error": str(exc)},
+        content={"detail": "Internal Server Error"},
     )
